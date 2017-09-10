@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <mutex>
 
 #include <QtWidgets/qmainwindow.h>
 #include <QtWidgets/qpushbutton.h>
@@ -42,4 +43,8 @@ private:
 	std::unique_ptr<QImage> m_resultImage;
 
 	fann* m_network;
+
+	std::mutex m_evaluationMutex;
+
+	bool m_isEvaluating;
 };

@@ -13,7 +13,7 @@
 
 
 MainWindow::MainWindow(QWidget* parent) :
-	QMainWindow(parent)
+	QMainWindow(parent), m_isEvaluating(false)
 {
 	// Creating window layout
 
@@ -60,6 +60,7 @@ MainWindow::MainWindow(QWidget* parent) :
 
 	m_buttonEvaluate = new QPushButton(centralwidget);
 	m_buttonEvaluate->setText("Evaluate");
+	m_buttonEvaluate->setEnabled(false);
 	gridLayout->addWidget(m_buttonEvaluate, 3, 1, 1, 1);
 
 	// Assigning
@@ -74,13 +75,15 @@ MainWindow::MainWindow(QWidget* parent) :
 
 
 	// Initializing neural network
-	m_network = fann_create_standard(3, 27, 8, 3);
+	m_network = fann_create_standard(3, 75, 25, 3);
 	fann_set_activation_function_hidden(m_network, FANN_SIGMOID);
 	fann_set_activation_function_output(m_network, FANN_SIGMOID);
 }
 
 MainWindow::~MainWindow()
 {
+	m_isEvaluating = false;
+	std::unique_lock<std::mutex> lock(m_evaluationMutex);
 	fann_destroy(m_network);
 }
 
@@ -153,10 +156,20 @@ void MainWindow::onSelectTrainingSource()
 	{
 	}
 
+	if (m_trainingSource != nullptr && m_trainingOutput != nullptr &&
+		m_trainingSource->size() != m_trainingOutput->size())
+	{
+		QMessageBox::warning(this, "Error", "Filter source and output must have the same size.");
+		m_trainingSource.reset(nullptr);
+	}
+
 	if (m_trainingSource != nullptr) {
 		m_trainingSource->convertToFormat(QImage::Format_RGB32);
 
 		m_labelLeft->setPixmap(QPixmap::fromImage(*m_trainingSource));
+
+		m_buttonEvaluate->setEnabled(m_trainingSource != nullptr && m_trainingOutput != nullptr &&
+			m_inputImage != nullptr);
 	}
 }
 
@@ -170,9 +183,19 @@ void MainWindow::onSelectTrainingOutput()
 	{
 	}
 
+	if (m_trainingSource != nullptr && m_trainingOutput != nullptr &&
+		m_trainingSource->size() != m_trainingOutput->size())
+	{
+		QMessageBox::warning(this, "Error", "Filter source and output must have the same size.");
+		m_trainingOutput.reset(nullptr);
+	}
+
 	if (m_trainingOutput != nullptr) {
 		m_trainingOutput->convertToFormat(QImage::Format_RGB32);
 		m_labelRight->setPixmap(QPixmap::fromImage(*m_trainingOutput));
+
+		m_buttonEvaluate->setEnabled(m_trainingSource != nullptr && m_trainingOutput != nullptr &&
+			m_inputImage != nullptr);
 	}
 }
 
@@ -192,21 +215,39 @@ void MainWindow::onSelectInput()
 
 		m_labelLeft->setPixmap(QPixmap::fromImage(*m_inputImage));
 		m_labelRight->setPixmap(QPixmap::fromImage(*m_resultImage));
+
+		m_buttonEvaluate->setEnabled(m_trainingSource != nullptr && m_trainingOutput != nullptr &&
+			m_inputImage != nullptr);
 	}
 }
 
 void MainWindow::onEvaluate()
 {
-	m_buttonEvaluate->setEnabled(false);
+	if (m_isEvaluating) {
+		m_isEvaluating = false;
 
-	std::thread([this]() {
-		for (size_t i = 0; i < 100; ++i) {
-			train();
-			preview();
-		}
+		std::unique_lock<std::mutex> lock(m_evaluationMutex);
+		m_buttonTrainingSource->setEnabled(true);
+		m_buttonTrainingOutput->setEnabled(true);
+		m_buttonSource->setEnabled(true);
+		m_buttonEvaluate->setText("Evaluate");
+	}
+	else {
+		m_buttonTrainingSource->setEnabled(false);
+		m_buttonTrainingOutput->setEnabled(false);
+		m_buttonSource->setEnabled(false);
+		m_buttonEvaluate->setText("Stop");
 
-		m_buttonEvaluate->setEnabled(true);
-	}).detach();
+		m_isEvaluating = true;
+
+		std::thread([this]() {
+			while (m_isEvaluating) {
+				std::unique_lock<std::mutex> lock(m_evaluationMutex);
+				train();
+				preview();
+			}
+		}).detach();
+	}
 }
 
 
@@ -214,17 +255,12 @@ void MainWindow::train()
 {
 	QSize size = m_trainingSource->size();
 
-	static QPoint neighbours[9] = {
-		QPoint(0,  0),
-		QPoint(-1, -1),
-		QPoint(0, -1),
-		QPoint(1, -1),
-		QPoint(-1,  0),
-		QPoint(1,  0),
-		QPoint(-1,  1),
-		QPoint(0,  1),
-		QPoint(1,  1),
-	};
+	static QPoint neighbours[25];
+	for (int i = -2; i < 3; ++i) {
+		for (int j = -2; j < 3; ++j) {
+			neighbours[(i + 2) * 3 + j + 2] = QPoint(i, j);
+		}
+	}
 
 	const QRgb* trainingSource = reinterpret_cast<const QRgb*>(m_trainingSource->bits());
 	const QRgb* trainingOutput = reinterpret_cast<const QRgb*>(m_trainingOutput->bits());
@@ -233,8 +269,8 @@ void MainWindow::train()
 		for (int x = 0; x < size.width(); ++x) {
 			QPoint point(x, y);
 
-			std::vector<double> pixels(27);
-			for (size_t i = 0; i < 9; ++i) {
+			std::vector<double> pixels(75);
+			for (size_t i = 0; i < 25; ++i) {
 				QPoint pointToSelect = point + neighbours[i];
 
 				if (pointToSelect.x() < 0) {
@@ -277,17 +313,12 @@ void MainWindow::preview()
 
 	QSize size = m_inputImage->size();
 
-	static QPoint neighbours[9] = {
-		QPoint(0,  0),
-		QPoint(-1, -1),
-		QPoint(0, -1),
-		QPoint(1, -1),
-		QPoint(-1,  0),
-		QPoint(1,  0),
-		QPoint(-1,  1),
-		QPoint(0,  1),
-		QPoint(1,  1),
-	};
+	static QPoint neighbours[25];
+	for (int i = -2; i < 3; ++i) {
+		for (int j = -2; j < 3; ++j) {
+			neighbours[(i + 2) * 3 + j + 2] = QPoint(i, j);
+		}
+	}
 
 	const QRgb* inputImage = reinterpret_cast<const QRgb*>(m_inputImage->bits());
 	QRgb* resultImage = reinterpret_cast<QRgb*>(m_resultImage->bits());
@@ -296,8 +327,8 @@ void MainWindow::preview()
 		for (int x = 0; x < size.width(); ++x) {
 			QPoint point(x, y);
 
-			std::vector<double> pixels(27);
-			for (size_t i = 0; i < 9; ++i) {
+			std::vector<double> pixels(75);
+			for (size_t i = 0; i < 25; ++i) {
 				QPoint pointToSelect = point + neighbours[i];
 
 				if (pointToSelect.x() < 0) {
