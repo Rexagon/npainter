@@ -11,7 +11,6 @@
 #include <QtGui/qimagereader.h>
 #include <QtGui/qimagewriter.h>
 
-
 MainWindow::MainWindow(QWidget* parent) :
 	QMainWindow(parent), m_isEvaluating(false)
 {
@@ -31,13 +30,13 @@ MainWindow::MainWindow(QWidget* parent) :
 	gridLayout->setMargin(padding);
 
 	// Creating images
-	m_labelRight = new QLabel(centralwidget);
-	m_labelRight->setAlignment(Qt::AlignCenter);
-	gridLayout->addWidget(m_labelRight, 0, 1, 1, 1);
-
 	m_labelLeft = new QLabel(centralwidget);
 	m_labelLeft->setAlignment(Qt::AlignCenter);
 	gridLayout->addWidget(m_labelLeft, 0, 0, 1, 1);
+
+	m_labelRight = new QLabel(centralwidget);
+	m_labelRight->setAlignment(Qt::AlignCenter);
+	gridLayout->addWidget(m_labelRight, 0, 1, 1, 1);
 
 	// Create line
 	QFrame* line = new QFrame(centralwidget);
@@ -75,7 +74,10 @@ MainWindow::MainWindow(QWidget* parent) :
 
 
 	// Initializing neural network
-	m_network = fann_create_standard(3, 75, 25, 3);
+	size_t kernelSize = 1;
+	m_kernel = generateKernel(kernelSize);
+
+	m_network = fann_create_standard(3, m_kernel.size() * 3, m_kernel.size(), 3);
 	fann_set_activation_function_hidden(m_network, FANN_SIGMOID);
 	fann_set_activation_function_output(m_network, FANN_SIGMOID);
 }
@@ -87,62 +89,6 @@ MainWindow::~MainWindow()
 	fann_destroy(m_network);
 }
 
-void MainWindow::initializeImageFileDialog(QFileDialog & dialog, QFileDialog::AcceptMode acceptMode)
-{
-	static bool firstDialog = true;
-
-	if (firstDialog) {
-		firstDialog = false;
-		const QStringList picturesLocations = QStandardPaths::standardLocations(QStandardPaths::PicturesLocation);
-		if (picturesLocations.isEmpty()) {
-			dialog.setDirectory(QDir::currentPath());
-		}
-		else {
-			dialog.setDirectory(picturesLocations.last());
-		}
-	}
-
-	QStringList mimeTypeFilters;
-
-	QByteArrayList supportedMimeTypes;
-	if (acceptMode == QFileDialog::AcceptOpen) {
-		supportedMimeTypes = QImageReader::supportedMimeTypes();
-	}
-	else {
-		supportedMimeTypes = QImageWriter::supportedMimeTypes();
-	}
-
-	for (const QByteArray& mimeTypeName : supportedMimeTypes) {
-		mimeTypeFilters.append(mimeTypeName);
-	}
-
-	mimeTypeFilters.sort();
-	dialog.setMimeTypeFilters(mimeTypeFilters);
-	dialog.selectMimeTypeFilter("image/png");
-
-	if (acceptMode == QFileDialog::AcceptSave) {
-		dialog.setDefaultSuffix("png");
-	}
-}
-
-std::unique_ptr<QImage> MainWindow::loadFile(const QString & fileName)
-{
-	QImageReader reader(fileName);
-	reader.setAutoTransform(true);
-
-	std::unique_ptr<QImage> image = std::make_unique<QImage>(reader.read());
-
-	if (image == nullptr || image->isNull()) {
-		QMessageBox::information(this, QGuiApplication::applicationDisplayName(),
-			tr("Cannot load %1: %2")
-			.arg(QDir::toNativeSeparators(fileName), reader.errorString()));
-		return nullptr;
-	}
-
-	return std::move(image);
-}
-
-
 // Main events handling //
 //////////////////////////
 
@@ -151,22 +97,20 @@ void MainWindow::onSelectTrainingSource()
 	QFileDialog dialog(this, tr("Open File"));
 	initializeImageFileDialog(dialog, QFileDialog::AcceptOpen);
 
+	std::unique_ptr<QImage> newImage;
+
 	while (dialog.exec() == QDialog::Accepted && 
-		!(m_trainingSource = loadFile(dialog.selectedFiles().first())))
+		!(newImage = loadFile(dialog.selectedFiles().first())))
 	{
 	}
 
-	if (m_trainingSource != nullptr && m_trainingOutput != nullptr &&
-		m_trainingSource->size() != m_trainingOutput->size())
-	{
-		QMessageBox::warning(this, "Error", "Filter source and output must have the same size.");
-		m_trainingSource.reset(nullptr);
-	}
-
-	if (m_trainingSource != nullptr) {
+	if (newImage != nullptr) {
+		m_trainingSource = std::move(newImage);
 		m_trainingSource->convertToFormat(QImage::Format_RGB32);
-
 		m_labelLeft->setPixmap(QPixmap::fromImage(*m_trainingSource));
+
+		m_trainingOutput.reset(nullptr);
+		m_labelRight->clear();
 
 		m_buttonEvaluate->setEnabled(m_trainingSource != nullptr && m_trainingOutput != nullptr &&
 			m_inputImage != nullptr);
@@ -178,19 +122,22 @@ void MainWindow::onSelectTrainingOutput()
 	QFileDialog dialog(this, tr("Open File"));
 	initializeImageFileDialog(dialog, QFileDialog::AcceptOpen);
 
+	std::unique_ptr<QImage> newImage;
+
 	while (dialog.exec() == QDialog::Accepted &&
-		!(m_trainingOutput = loadFile(dialog.selectedFiles().first())))
+		!(newImage = loadFile(dialog.selectedFiles().first())))
 	{
 	}
 
-	if (m_trainingSource != nullptr && m_trainingOutput != nullptr &&
-		m_trainingSource->size() != m_trainingOutput->size())
+	if (m_trainingSource != nullptr && newImage != nullptr &&
+		m_trainingSource->size() != newImage->size())
 	{
 		QMessageBox::warning(this, "Error", "Filter source and output must have the same size.");
-		m_trainingOutput.reset(nullptr);
+		newImage.reset(nullptr);
 	}
 
-	if (m_trainingOutput != nullptr) {
+	if (newImage != nullptr) {
+		m_trainingOutput = std::move(newImage);
 		m_trainingOutput->convertToFormat(QImage::Format_RGB32);
 		m_labelRight->setPixmap(QPixmap::fromImage(*m_trainingOutput));
 
@@ -204,16 +151,19 @@ void MainWindow::onSelectInput()
 	QFileDialog dialog(this, tr("Open File"));
 	initializeImageFileDialog(dialog, QFileDialog::AcceptOpen);
 
+	std::unique_ptr<QImage> newImage;
+
 	while (dialog.exec() == QDialog::Accepted &&
-		!(m_inputImage = loadFile(dialog.selectedFiles().first())))
+		!(newImage = loadFile(dialog.selectedFiles().first())))
 	{
 	}
 
-	if (m_inputImage != nullptr) {
+	if (newImage != nullptr) {
+		m_inputImage = std::move(newImage);
 		m_inputImage->convertToFormat(QImage::Format_RGB32);
-		m_resultImage = std::make_unique<QImage>(m_inputImage->size(), QImage::Format_RGB32);
-
 		m_labelLeft->setPixmap(QPixmap::fromImage(*m_inputImage));
+
+		m_resultImage = std::make_unique<QImage>(m_inputImage->size(), QImage::Format_RGB32);
 		m_labelRight->setPixmap(QPixmap::fromImage(*m_resultImage));
 
 		m_buttonEvaluate->setEnabled(m_trainingSource != nullptr && m_trainingOutput != nullptr &&
@@ -253,25 +203,18 @@ void MainWindow::onEvaluate()
 
 void MainWindow::train()
 {
-	QSize size = m_trainingSource->size();
-
-	static QPoint neighbours[25];
-	for (int i = -2; i < 3; ++i) {
-		for (int j = -2; j < 3; ++j) {
-			neighbours[(i + 2) * 3 + j + 2] = QPoint(i, j);
-		}
-	}
-
 	const QRgb* trainingSource = reinterpret_cast<const QRgb*>(m_trainingSource->bits());
 	const QRgb* trainingOutput = reinterpret_cast<const QRgb*>(m_trainingOutput->bits());
+
+	QSize size = m_trainingSource->size();
 
 	for (int y = 0; y < size.height(); ++y) {
 		for (int x = 0; x < size.width(); ++x) {
 			QPoint point(x, y);
 
-			std::vector<double> pixels(75);
-			for (size_t i = 0; i < 25; ++i) {
-				QPoint pointToSelect = point + neighbours[i];
+			std::vector<double> pixels(m_kernel.size() * 3);
+			for (size_t i = 0; i < m_kernel.size(); ++i) {
+				QPoint pointToSelect = point + m_kernel[i];
 
 				if (pointToSelect.x() < 0) {
 					pointToSelect.setX(0);
@@ -311,25 +254,18 @@ void MainWindow::preview()
 		return;
 	}
 
-	QSize size = m_inputImage->size();
-
-	static QPoint neighbours[25];
-	for (int i = -2; i < 3; ++i) {
-		for (int j = -2; j < 3; ++j) {
-			neighbours[(i + 2) * 3 + j + 2] = QPoint(i, j);
-		}
-	}
-
 	const QRgb* inputImage = reinterpret_cast<const QRgb*>(m_inputImage->bits());
 	QRgb* resultImage = reinterpret_cast<QRgb*>(m_resultImage->bits());
+
+	QSize size = m_inputImage->size();
 
 	for (int y = 0; y < size.height(); ++y) {
 		for (int x = 0; x < size.width(); ++x) {
 			QPoint point(x, y);
 
-			std::vector<double> pixels(75);
-			for (size_t i = 0; i < 25; ++i) {
-				QPoint pointToSelect = point + neighbours[i];
+			std::vector<double> pixels(m_kernel.size() * 3);
+			for (size_t i = 0; i < m_kernel.size(); ++i) {
+				QPoint pointToSelect = point + m_kernel[i];
 
 				if (pointToSelect.x() < 0) {
 					pointToSelect.setX(0);
@@ -358,4 +294,65 @@ void MainWindow::preview()
 	}
 
 	m_labelRight->setPixmap(QPixmap::fromImage(*m_resultImage));
+}
+
+void MainWindow::initializeImageFileDialog(QFileDialog & dialog, QFileDialog::AcceptMode acceptMode)
+{
+	static bool firstDialog = true;
+
+	if (firstDialog) {
+		firstDialog = false;
+		const QStringList picturesLocations = QStandardPaths::standardLocations(QStandardPaths::PicturesLocation);
+		if (picturesLocations.isEmpty()) {
+			dialog.setDirectory(QDir::currentPath());
+		}
+		else {
+			dialog.setDirectory(picturesLocations.last());
+		}
+	}
+
+	dialog.setNameFilter("Image Files (*.png *.jpg *.bmp)");
+
+	if (acceptMode == QFileDialog::AcceptSave) {
+		dialog.setDefaultSuffix("png");
+	}
+}
+
+std::unique_ptr<QImage> MainWindow::loadFile(const QString & fileName)
+{
+	QImageReader reader(fileName);
+	reader.setAutoTransform(true);
+
+	std::unique_ptr<QImage> image = std::make_unique<QImage>(reader.read());
+
+	if (image == nullptr || image->isNull())
+	{
+		QMessageBox::information(this, QGuiApplication::applicationDisplayName(),
+			"Cannot load " + QDir::toNativeSeparators(fileName) + ": " + reader.errorString());
+		return nullptr;
+	}
+
+	return std::move(image);
+}
+
+std::vector<QPoint> MainWindow::generateKernel(size_t size)
+{
+	size_t sideSize = size * 2 + 1;
+
+	printf("%ux%u kernel generated\n", sideSize, sideSize);
+
+	std::vector<QPoint> result(sideSize * sideSize);
+	for (size_t j = 0; j < sideSize; ++j) {
+		for (size_t i = 0; i < sideSize; ++i) {
+			QPoint offset = QPoint(static_cast<int>(i) - static_cast<int>(size), 
+				static_cast<int>(j) - static_cast<int>(size));
+
+			result[i * sideSize + j] = offset;
+
+			printf("(%+d, %+d) ", offset.x(), offset.y());
+		}
+		printf("\n");
+	}
+
+	return result;
 }

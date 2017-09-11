@@ -17,9 +17,6 @@ public:
 	~MainWindow();
 
 private:
-	void initializeImageFileDialog(QFileDialog& dialog, QFileDialog::AcceptMode acceptMode);
-	std::unique_ptr<QImage> loadFile(const QString& fileName);
-	
 	void onSelectTrainingSource();
 	void onSelectTrainingOutput();
 	void onSelectInput();
@@ -28,8 +25,12 @@ private:
 	void train();
 	void preview();
 
-	QLabel* m_labelRight;
+	void initializeImageFileDialog(QFileDialog& dialog, QFileDialog::AcceptMode acceptMode);
+	std::unique_ptr<QImage> loadFile(const QString& fileName);
+	std::vector<QPoint> generateKernel(size_t size);
+
 	QLabel* m_labelLeft;
+	QLabel* m_labelRight;
 
 	QPushButton* m_buttonTrainingSource;
 	QPushButton* m_buttonTrainingOutput;
@@ -43,6 +44,7 @@ private:
 	std::unique_ptr<QImage> m_resultImage;
 
 	fann* m_network;
+	std::vector<QPoint> m_kernel;
 
 	std::mutex m_evaluationMutex;
 
